@@ -27,8 +27,8 @@ $bogof_free_product_id = 7; // Ersetze mit der ID deines Gratisprodukts
 // Bei variablen Produkten: ID der spezifischen Variation (optional, 0 = erste verfügbare Variation)
 $bogof_free_variation_id = 0; // 0 = erste verfügbare Variation oder setze eine spezifische Variations-ID
 
-// Code des Coupons, der das Gratisprodukt auslöst
-$bogof_coupon_code = 'COUPON'; // Ersetze mit deinem Coupon-Code
+// Liste der Coupon-Codes, die das Gratisprodukt auslösen
+$bogof_coupon_codes = array('COUPON', 'BOGOF', 'GRATIS'); // Ersetze mit deinen Coupon-Codes
 
 // Gültigkeitszeitraum für die Aktion (YYYY-MM-DD Format)
 $bogof_start_date = '2025-04-12'; // Startdatum
@@ -112,7 +112,7 @@ function bogof_is_product_in_cart($product_id)
  */
 function add_free_product_with_coupon()
 {
-    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_code,
+    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_codes,
         $bogof_start_date, $bogof_end_date, $bogof_free_variation_id, $bogof_excluded_variations;
 
     // Cache-Key für die aktuelle Operation
@@ -141,11 +141,11 @@ function add_free_product_with_coupon()
 
     // Prüfe, ob der Coupon angewendet wurde
     $applied_coupons = WC()->cart->get_applied_coupons();
-    if (empty($applied_coupons) || !in_array(strtolower($bogof_coupon_code), array_map('strtolower', $applied_coupons))) {
-        bogof_debug("Coupon $bogof_coupon_code nicht angewendet");
+    if (empty($applied_coupons) || empty(array_intersect(array_map('strtolower', $bogof_coupon_codes), array_map('strtolower', $applied_coupons)))) {
+        bogof_debug("Keiner der Coupons " . implode(", ", $bogof_coupon_codes) . " wurde angewendet");
         return;
     }
-    bogof_debug("Coupon $bogof_coupon_code ist aktiv");
+    bogof_debug("Einer der Coupons " . implode(", ", $bogof_coupon_codes) . " ist aktiv");
 
     // Optimierte Suche nach erforderlichen Produkten
     $found_required_product = false;
@@ -294,9 +294,9 @@ add_action('woocommerce_applied_coupon', 'bogof_check_coupon');
  */
 function bogof_check_coupon($coupon_code)
 {
-    global $bogof_coupon_code, $bogof_required_products, $bogof_excluded_variations;
+    global $bogof_coupon_codes, $bogof_required_products, $bogof_excluded_variations;
 
-    if (strtolower($coupon_code) === strtolower($bogof_coupon_code)) {
+    if (in_array(strtolower($coupon_code), array_map('strtolower', $bogof_coupon_codes))) {
         bogof_debug("Coupon $coupon_code wurde gerade angewendet");
 
         // Prüfe, ob die erforderlichen Produkte im Warenkorb sind
@@ -504,7 +504,7 @@ add_filter('woocommerce_update_cart_validation', 'validate_cart_item_quantity', 
  */
 function remove_free_product_if_requirements_not_met()
 {
-    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_code,
+    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_codes,
         $bogof_start_date, $bogof_end_date;
 
     // Wenn Warenkorb nicht verfügbar ist, abbrechen
@@ -525,10 +525,10 @@ function remove_free_product_if_requirements_not_met()
 
     // Prüfe, ob der Coupon angewendet wurde
     $applied_coupons = WC()->cart->get_applied_coupons();
-    $coupon_applied = in_array(strtolower($bogof_coupon_code), array_map('strtolower', $applied_coupons));
+    $coupon_applied = !empty(array_intersect(array_map('strtolower', $bogof_coupon_codes), array_map('strtolower', $applied_coupons)));
 
     if (!$coupon_applied) {
-        bogof_debug("Coupon nicht angewendet, entferne Gratisprodukt");
+        bogof_debug("Keiner der Coupons wurde angewendet, entferne Gratisprodukt");
         remove_bogof_product();
         return;
     }
