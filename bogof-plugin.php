@@ -15,24 +15,24 @@ if (!defined('ABSPATH')) {
 
 // Liste der Produkt-IDs, die im Warenkorb sein müssen (mindestens eines davon)
 // HINWEIS: Für variable Produkte kannst du entweder die Haupt-Produkt-ID oder bestimmte Variations-IDs angeben
-$bogof_required_products = array(1, 2, 3); // Ersetze mit deinen Produkt-IDs
+$bogof_required_products = array(698, 4239); // Ersetze mit deinen Produkt-IDs
 
 // Liste der Variations-IDs, die von der Aktion ausgeschlossen werden sollen
 // Diese werden auch dann ausgeschlossen, wenn das Hauptprodukt erlaubt ist
-$bogof_excluded_variations = array(3, 4, 5); // Ersetze mit deinen Variations-IDs
+$bogof_excluded_variations = array(7485, 7484); // Ersetze mit deinen Variations-IDs
 
 // ID des Gratisprodukts, das hinzugefügt werden soll
-$bogof_free_product_id = 7; // Ersetze mit der ID deines Gratisprodukts
+$bogof_free_product_id = 9624; // Ersetze mit der ID deines Gratisprodukts
 
 // Bei variablen Produkten: ID der spezifischen Variation (optional, 0 = erste verfügbare Variation)
 $bogof_free_variation_id = 0; // 0 = erste verfügbare Variation oder setze eine spezifische Variations-ID
 
-// Liste der Coupon-Codes, die das Gratisprodukt auslösen
-$bogof_coupon_codes = array('COUPON', 'BOGOF', 'GRATIS'); // Ersetze mit deinen Coupon-Codes
+// Code des Coupons, der das Gratisprodukt auslöst
+$bogof_coupon_codes = array('jubiläum', "geburtstag", "geschenk"); // Ersetze mit deinem Coupon-Code
 
 // Gültigkeitszeitraum für die Aktion (YYYY-MM-DD Format)
-$bogof_start_date = '2025-04-12'; // Startdatum
-$bogof_end_date = '2025-04-21';   // Enddatum
+$bogof_start_date = '2025-05-11'; // Startdatum
+$bogof_end_date = '2025-05-18';   // Enddatum
 
 // Debug-Modus (true/false)
 $bogof_debug = false; // Auf false setzen für Produktivumgebung
