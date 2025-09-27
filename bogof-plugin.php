@@ -13,32 +13,206 @@ if (!defined('ABSPATH')) {
 
 // ===== KONFIGURATION =====
 
-// Liste der Produkt-IDs, die im Warenkorb sein müssen (mindestens eines davon)
-// HINWEIS: Für variable Produkte kannst du entweder die Haupt-Produkt-ID oder bestimmte Variations-IDs angeben
-$bogof_required_products = array(698, 4239); // Ersetze mit deinen Produkt-IDs
-
-// Liste der Variations-IDs, die von der Aktion ausgeschlossen werden sollen
-// Diese werden auch dann ausgeschlossen, wenn das Hauptprodukt erlaubt ist
-$bogof_excluded_variations = array(7485, 7484); // Ersetze mit deinen Variations-IDs
-
-// ID des Gratisprodukts, das hinzugefügt werden soll
-$bogof_free_product_id = 9624; // Ersetze mit der ID deines Gratisprodukts
-
-// Bei variablen Produkten: ID der spezifischen Variation (optional, 0 = erste verfügbare Variation)
-$bogof_free_variation_id = 0; // 0 = erste verfügbare Variation oder setze eine spezifische Variations-ID
-
-// Code des Coupons, der das Gratisprodukt auslöst
-$bogof_coupon_codes = array('jubiläum', "geburtstag", "geschenk"); // Ersetze mit deinem Coupon-Code
-
-// Gültigkeitszeitraum für die Aktion (YYYY-MM-DD Format)
-$bogof_start_date = '2025-05-11'; // Startdatum
-$bogof_end_date = '2025-05-18';   // Enddatum
-
 // Debug-Modus (true/false)
 $bogof_debug = false; // Auf false setzen für Produktivumgebung
 
-// Maximale Anzahl des Gratisprodukts, die bestellt werden kann
-$bogof_max_quantity = 1;
+// ===== KAMPAGNEN-KLASSEN =====
+
+/**
+ * Klasse für eine einzelne BOGOF-Kampagne
+ */
+class BOGOF_Campaign {
+    public $name;
+    public $coupon_codes;
+    public $required_products;
+    public $excluded_variations;
+    public $free_product_id;
+    public $free_variation_id;
+    public $start_date;
+    public $end_date;
+    public $max_quantity;
+    public $active;
+
+    public function __construct($config) {
+        $this->name = $config['name'] ?? 'Unbenannte Kampagne';
+        $this->coupon_codes = array_map('strtolower', $config['coupon_codes'] ?? []);
+        $this->required_products = $config['required_products'] ?? [];
+        $this->excluded_variations = $config['excluded_variations'] ?? [];
+        $this->free_product_id = $config['free_product_id'] ?? 0;
+        $this->free_variation_id = $config['free_variation_id'] ?? 0;
+        $this->start_date = $config['start_date'] ?? null;
+        $this->end_date = $config['end_date'] ?? null;
+        $this->max_quantity = $config['max_quantity'] ?? 1;
+        $this->active = $config['active'] ?? true;
+    }
+
+    /**
+     * Prüft, ob die Kampagne aktuell gültig ist (Datum und Aktivierung)
+     */
+    public function is_valid() {
+        if (!$this->active) {
+            return false;
+        }
+
+        $current_date = date('Y-m-d');
+        
+        // Prüfe Startdatum
+        if ($this->start_date && $current_date < $this->start_date) {
+            return false;
+        }
+        
+        // Prüfe Enddatum (null bedeutet unbegrenzt)
+        if ($this->end_date && $current_date > $this->end_date) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Prüft, ob einer der Gutscheincodes angewendet wurde
+     */
+    public function has_valid_coupon() {
+        $applied_coupons = array_map('strtolower', WC()->cart->get_applied_coupons());
+        return !empty(array_intersect($this->coupon_codes, $applied_coupons));
+    }
+}
+
+/**
+ * Manager-Klasse für alle BOGOF-Kampagnen
+ */
+class BOGOF_Campaign_Manager {
+    private static $instance = null;
+    private $campaigns = [];
+
+    public static function get_instance() {
+        if (self::$instance === null) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    private function __construct() {
+        $this->load_campaigns();
+    }
+
+    /**
+     * Lädt alle Kampagnen aus der Konfigurationsdatei
+     */
+    private function load_campaigns() {
+        $config_file = plugin_dir_path(__FILE__) . 'bogof-campaigns.php';
+        
+        if (!file_exists($config_file)) {
+            bogof_debug("Konfigurationsdatei nicht gefunden: $config_file");
+            return;
+        }
+
+        $campaigns_config = include $config_file;
+        
+        if (!is_array($campaigns_config)) {
+            bogof_debug("Ungültige Konfigurationsdatei");
+            return;
+        }
+
+        foreach ($campaigns_config as $config) {
+            $this->campaigns[] = new BOGOF_Campaign($config);
+        }
+
+        bogof_debug("Geladene Kampagnen: " . count($this->campaigns));
+    }
+
+    /**
+     * Findet die erste passende aktive Kampagne
+     */
+    public function find_matching_campaign() {
+        foreach ($this->campaigns as $campaign) {
+            if (!$campaign->is_valid()) {
+                bogof_debug("Kampagne '{$campaign->name}' ist nicht gültig (inaktiv oder außerhalb des Zeitraums)");
+                continue;
+            }
+
+            if (!$campaign->has_valid_coupon()) {
+                bogof_debug("Kampagne '{$campaign->name}' hat keinen gültigen Gutschein");
+                continue;
+            }
+
+            // Prüfe, ob erforderliche Produkte im Warenkorb sind
+            if ($this->has_required_products($campaign)) {
+                bogof_debug("Passende Kampagne gefunden: '{$campaign->name}'");
+                return $campaign;
+            }
+
+            bogof_debug("Kampagne '{$campaign->name}' hat keine erforderlichen Produkte im Warenkorb");
+        }
+
+        return null;
+    }
+
+    /**
+     * Prüft, ob die erforderlichen Produkte einer Kampagne im Warenkorb sind
+     */
+    public function has_required_products($campaign) {
+        $cart_items = WC()->cart->get_cart();
+        
+        // Sammle alle Produkt-IDs und Variation-IDs im Warenkorb
+        $product_ids_in_cart = [];
+        $variation_ids_in_cart = [];
+        $variation_parents = [];
+
+        foreach ($cart_items as $cart_item) {
+            $product_id = $cart_item['product_id'];
+            $variation_id = !empty($cart_item['variation_id']) ? $cart_item['variation_id'] : 0;
+
+            // Wenn die Variation ausgeschlossen ist, überspringen
+            if ($variation_id > 0 && in_array($variation_id, $campaign->excluded_variations)) {
+                continue;
+            }
+
+            $product_ids_in_cart[] = $product_id;
+
+            if ($variation_id > 0) {
+                $variation_ids_in_cart[] = $variation_id;
+                
+                // Parent-ID für die Variation speichern
+                $product = wc_get_product($variation_id);
+                if ($product) {
+                    $variation_parents[$variation_id] = $product->get_parent_id();
+                }
+            }
+        }
+
+        // Prüfe, ob eines der erforderlichen Produkte im Warenkorb ist
+        foreach ($campaign->required_products as $required_product_id) {
+            // Direkte Produktübereinstimmung
+            if (in_array($required_product_id, $product_ids_in_cart)) {
+                return true;
+            }
+
+            // Direkte Variationsübereinstimmung
+            if (in_array($required_product_id, $variation_ids_in_cart)) {
+                return true;
+            }
+
+            // Überprüfe, ob eine der Variationen dem Elternprodukt entspricht
+            foreach ($variation_parents as $variation_id => $parent_id) {
+                if ($parent_id == $required_product_id && !in_array($variation_id, $campaign->excluded_variations)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Gibt alle aktiven Kampagnen zurück
+     */
+    public function get_active_campaigns() {
+        return array_filter($this->campaigns, function($campaign) {
+            return $campaign->is_valid();
+        });
+    }
+}
 
 // ===== FUNKTIONEN =====
 
@@ -54,20 +228,18 @@ function bogof_debug($message)
 }
 
 /**
- * Prüft, ob ein Produkt eine der ausgeschlossenen Variations-IDs hat
+ * Prüft, ob ein Produkt eine der ausgeschlossenen Variations-IDs hat (für eine bestimmte Kampagne)
  */
-function bogof_is_excluded_variation($product_id, $variation_id = 0)
+function bogof_is_excluded_variation($campaign, $product_id, $variation_id = 0)
 {
-    global $bogof_excluded_variations;
-
     // Wenn keine Variations-IDs zum Ausschließen definiert sind, überspringen
-    if (empty($bogof_excluded_variations)) {
+    if (empty($campaign->excluded_variations)) {
         return false;
     }
 
     // Wenn es eine Variation ist, direkt prüfen
-    if ($variation_id > 0 && in_array($variation_id, $bogof_excluded_variations)) {
-        bogof_debug("Variation mit ID $variation_id ist ausgeschlossen");
+    if ($variation_id > 0 && in_array($variation_id, $campaign->excluded_variations)) {
+        bogof_debug("Variation mit ID $variation_id ist in Kampagne '{$campaign->name}' ausgeschlossen");
         return true;
     }
 
@@ -75,46 +247,10 @@ function bogof_is_excluded_variation($product_id, $variation_id = 0)
 }
 
 /**
- * Prüft, ob ein bestimmtes Produkt oder eine seiner Variationen im Warenkorb ist
- */
-function bogof_is_product_in_cart($product_id)
-{
-    global $bogof_excluded_variations;
-
-    foreach (WC()->cart->get_cart() as $cart_item) {
-        $variation_id = !empty($cart_item['variation_id']) ? $cart_item['variation_id'] : 0;
-
-        // Prüfen, ob die Variation ausgeschlossen ist
-        if (bogof_is_excluded_variation($cart_item['product_id'], $variation_id)) {
-            continue; // Diese Variation überspringen
-        }
-
-        // Prüfe direkte Übereinstimmung mit Produkt-ID (einfaches Produkt oder Hauptprodukt)
-        if ($cart_item['product_id'] == $product_id) {
-            return true;
-        }
-
-        // Bei variablen Produkten: Prüfe, ob das Elternprodukt übereinstimmt
-        if ($variation_id > 0) {
-            $product = wc_get_product($variation_id);
-            if ($product && $product->get_parent_id() == $product_id) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-/**
- * Fügt automatisch ein Gratisprodukt zum Warenkorb hinzu, wenn ein bestimmter Coupon
- * verwendet wird und bestimmte Produkte im Warenkorb liegen.
+ * Fügt automatisch ein Gratisprodukt zum Warenkorb hinzu basierend auf passenden Kampagnen
  */
 function add_free_product_with_coupon()
 {
-    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_codes,
-        $bogof_start_date, $bogof_end_date, $bogof_free_variation_id, $bogof_excluded_variations;
-
     // Cache-Key für die aktuelle Operation
     static $already_run = false;
 
@@ -132,99 +268,25 @@ function add_free_product_with_coupon()
 
     bogof_debug("BOGOF Funktion gestartet");
 
-    // Prüfe, ob das aktuelle Datum im gültigen Zeitraum liegt
-    $current_date = date('Y-m-d');
-    if ($current_date < $bogof_start_date || $current_date > $bogof_end_date) {
-        bogof_debug("Datum ungültig: Heute ist $current_date, gültig von $bogof_start_date bis $bogof_end_date");
-        return; // Außerhalb des gültigen Zeitraums
-    }
-
-    // Prüfe, ob der Coupon angewendet wurde
-    $applied_coupons = WC()->cart->get_applied_coupons();
-    if (empty($applied_coupons) || empty(array_intersect(array_map('strtolower', $bogof_coupon_codes), array_map('strtolower', $applied_coupons)))) {
-        bogof_debug("Keiner der Coupons " . implode(", ", $bogof_coupon_codes) . " wurde angewendet");
+    // Hole den Kampagnen-Manager
+    $campaign_manager = BOGOF_Campaign_Manager::get_instance();
+    
+    // Finde die erste passende Kampagne
+    $active_campaign = $campaign_manager->find_matching_campaign();
+    
+    if (!$active_campaign) {
+        bogof_debug("Keine passende Kampagne gefunden");
         return;
     }
-    bogof_debug("Einer der Coupons " . implode(", ", $bogof_coupon_codes) . " ist aktiv");
 
-    // Optimierte Suche nach erforderlichen Produkten
-    $found_required_product = false;
-    $found_products = array();
-    $cart_items = WC()->cart->get_cart();
-
-    // Hole erst alle IDs im Warenkorb (schneller)
-    $product_ids_in_cart = [];
-    $variation_ids_in_cart = [];
-    $variation_parents = [];
-
-    foreach ($cart_items as $cart_item) {
-        $product_id = $cart_item['product_id'];
-        $variation_id = !empty($cart_item['variation_id']) ? $cart_item['variation_id'] : 0;
-
-        // Wenn die Variation ausgeschlossen ist, überspringen
-        if (bogof_is_excluded_variation($product_id, $variation_id)) {
-            bogof_debug("Überspringe ausgeschlossene Variation: $variation_id");
-            continue;
-        }
-
-        // Sammle Produkt-IDs
-        $product_ids_in_cart[] = $product_id;
-
-        if ($variation_id > 0) {
-            $variation_ids_in_cart[] = $variation_id;
-
-            // Cache parent IDs for variations
-            if (!isset($variation_parents[$variation_id])) {
-                $product = wc_get_product($variation_id);
-                if ($product) {
-                    $variation_parents[$variation_id] = $product->get_parent_id();
-                }
-            }
-        }
-    }
-
-    bogof_debug("Produkte im Warenkorb: " . implode(", ", $product_ids_in_cart));
-    if (!empty($bogof_excluded_variations)) {
-        bogof_debug("Ausgeschlossene Variations-IDs: " . implode(", ", $bogof_excluded_variations));
-    }
-
-    // Prüfe, ob eines unserer erforderlichen Produkte im Warenkorb ist
-    foreach ($bogof_required_products as $required_product_id) {
-        // Direkte Produktübereinstimmung
-        if (in_array($required_product_id, $product_ids_in_cart)) {
-            $found_required_product = true;
-            $found_products[] = $required_product_id;
-            break;
-        }
-
-        // Direkte Variationsübereinstimmung
-        if (in_array($required_product_id, $variation_ids_in_cart)) {
-            $found_required_product = true;
-            $found_products[] = $required_product_id . ' (Variation)';
-            break;
-        }
-
-        // Überprüfe, ob eine der Variationen dem Elternprodukt entspricht
-        foreach ($variation_parents as $variation_id => $parent_id) {
-            if ($parent_id == $required_product_id && !in_array($variation_id, $bogof_excluded_variations)) {
-                $found_required_product = true;
-                $found_products[] = $required_product_id . ' (Elternprodukt der Variation ' . $variation_id . ')';
-                break 2;
-            }
-        }
-    }
-
-    // Wenn kein erforderliches Produkt gefunden wurde, abbrechen
-    if (!$found_required_product) {
-        bogof_debug("Keine erforderlichen Produkte im Warenkorb gefunden oder alle sind ausgeschlossen");
-        return;
-    }
-    bogof_debug("Erforderliche Produkte gefunden: " . implode(", ", $found_products));
+    bogof_debug("Aktive Kampagne: '{$active_campaign->name}'");
 
     // Prüfe, ob das Gratisprodukt bereits im Warenkorb ist
+    $cart_items = WC()->cart->get_cart();
     $free_product_in_cart = false;
+    
     foreach ($cart_items as $cart_item_key => $cart_item) {
-        if ($cart_item['product_id'] == $bogof_free_product_id && isset($cart_item['free_product'])) {
+        if ($cart_item['product_id'] == $active_campaign->free_product_id && isset($cart_item['free_product'])) {
             $free_product_in_cart = true;
             bogof_debug("Gratisprodukt bereits im Warenkorb");
             break;
@@ -233,32 +295,48 @@ function add_free_product_with_coupon()
 
     // Wenn das Gratisprodukt noch nicht im Warenkorb ist, füge es hinzu
     if (!$free_product_in_cart) {
-        bogof_debug("Versuche Gratisprodukt hinzuzufügen (ID: $bogof_free_product_id)");
+        bogof_debug("Versuche Gratisprodukt hinzuzufügen (ID: {$active_campaign->free_product_id})");
 
-        // Füge direkt Code ein, der das Produkt dem Warenkorb hinzufügt
         try {
-            // Produkt direkt hinzufügen, ohne auf mögliche variable Produkte zu prüfen
-            $cart_item_key = WC()->cart->add_to_cart($bogof_free_product_id, 1);
-
-            if (!$cart_item_key) {
-                bogof_debug("FEHLER: Produkt konnte nicht hinzugefügt werden. Versuche es als variables Produkt.");
-
-                // Versuche es als variables Produkt falls vorhanden
-                $product = wc_get_product($bogof_free_product_id);
+            $cart_item_key = null;
+            
+            // Prüfe, ob eine spezifische Variation gewünscht ist
+            if ($active_campaign->free_variation_id > 0) {
+                $product = wc_get_product($active_campaign->free_product_id);
                 if ($product && $product->is_type('variable')) {
-                    $available_variations = $product->get_available_variations();
-                    if (!empty($available_variations)) {
-                        $variation_id = $available_variations[0]['variation_id'];
-                        $attributes = $available_variations[0]['attributes'];
-
+                    $variation_product = wc_get_product($active_campaign->free_variation_id);
+                    if ($variation_product) {
+                        $attributes = $variation_product->get_variation_attributes();
                         $cart_item_key = WC()->cart->add_to_cart(
-                            $bogof_free_product_id,
+                            $active_campaign->free_product_id,
                             1,
-                            $variation_id,
+                            $active_campaign->free_variation_id,
                             $attributes
                         );
+                        bogof_debug("Spezifische Variation {$active_campaign->free_variation_id} hinzugefügt");
+                    }
+                }
+            } else {
+                // Versuche einfaches Produkt hinzuzufügen
+                $cart_item_key = WC()->cart->add_to_cart($active_campaign->free_product_id, 1);
+                
+                if (!$cart_item_key) {
+                    // Versuche es als variables Produkt mit erster verfügbarer Variation
+                    $product = wc_get_product($active_campaign->free_product_id);
+                    if ($product && $product->is_type('variable')) {
+                        $available_variations = $product->get_available_variations();
+                        if (!empty($available_variations)) {
+                            $variation_id = $available_variations[0]['variation_id'];
+                            $attributes = $available_variations[0]['attributes'];
 
-                        bogof_debug("Variables Produkt: Variation $variation_id hinzugefügt");
+                            $cart_item_key = WC()->cart->add_to_cart(
+                                $active_campaign->free_product_id,
+                                1,
+                                $variation_id,
+                                $attributes
+                            );
+                            bogof_debug("Variables Produkt: Erste verfügbare Variation $variation_id hinzugefügt");
+                        }
                     }
                 }
             }
@@ -268,6 +346,7 @@ function add_free_product_with_coupon()
 
                 // Markiere das Produkt als kostenlos und setze den Preis auf 0
                 WC()->cart->cart_contents[$cart_item_key]['free_product'] = true;
+                WC()->cart->cart_contents[$cart_item_key]['campaign_name'] = $active_campaign->name;
                 WC()->cart->cart_contents[$cart_item_key]['data']->set_price(0);
 
                 // Aktualisiere den Warenkorb
@@ -275,7 +354,8 @@ function add_free_product_with_coupon()
 
                 // Zeige eine Nachricht an
                 wc_add_notice(sprintf(
-                    __('Ein kostenloses Produkt wurde zu deinem Warenkorb hinzugefügt!', 'woocommerce')
+                    __('Ein kostenloses Produkt wurde aus der "%s" zu deinem Warenkorb hinzugefügt!', 'woocommerce'),
+                    $active_campaign->name
                 ), 'success');
             } else {
                 bogof_debug("KRITISCHER FEHLER: Produkt konnte nicht hinzugefügt werden");
@@ -294,85 +374,73 @@ add_action('woocommerce_applied_coupon', 'bogof_check_coupon');
  */
 function bogof_check_coupon($coupon_code)
 {
-    global $bogof_coupon_codes, $bogof_required_products, $bogof_excluded_variations;
+    bogof_debug("Coupon $coupon_code wurde angewendet, prüfe Kampagnen");
 
-    if (in_array(strtolower($coupon_code), array_map('strtolower', $bogof_coupon_codes))) {
-        bogof_debug("Coupon $coupon_code wurde gerade angewendet");
-
-        // Prüfe, ob die erforderlichen Produkte im Warenkorb sind
-        $found_required_product = false;
-        $cart_items = WC()->cart->get_cart();
-
-        // Sammle alle Produkt-IDs und Variation-IDs im Warenkorb
-        $product_ids_in_cart = [];
-        $variation_ids_in_cart = [];
-        $variation_parents = [];
-
-        foreach ($cart_items as $cart_item) {
-            $product_id = $cart_item['product_id'];
-            $variation_id = !empty($cart_item['variation_id']) ? $cart_item['variation_id'] : 0;
-
-            // Wenn die Variation ausgeschlossen ist, überspringen
-            if ($variation_id > 0 && !empty($bogof_excluded_variations) && in_array($variation_id, $bogof_excluded_variations)) {
-                continue;
-            }
-
-            $product_ids_in_cart[] = $product_id;
-
-            if ($variation_id > 0) {
-                $variation_ids_in_cart[] = $variation_id;
-
-                // Parent-ID für die Variation speichern
-                $product = wc_get_product($variation_id);
-                if ($product) {
-                    $variation_parents[$variation_id] = $product->get_parent_id();
-                }
-            }
+    // Hole den Kampagnen-Manager
+    $campaign_manager = BOGOF_Campaign_Manager::get_instance();
+    
+    // Prüfe, ob der Coupon zu einer aktiven Kampagne gehört
+    $matching_campaign = null;
+    foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+        if (in_array(strtolower($coupon_code), $campaign->coupon_codes)) {
+            $matching_campaign = $campaign;
+            break;
         }
-
-        // Prüfe, ob eines der erforderlichen Produkte im Warenkorb ist
-        foreach ($bogof_required_products as $required_product_id) {
-            // Direkte Produktübereinstimmung
-            if (in_array($required_product_id, $product_ids_in_cart)) {
-                $found_required_product = true;
-                break;
-            }
-
-            // Direkte Variationsübereinstimmung
-            if (in_array($required_product_id, $variation_ids_in_cart)) {
-                $found_required_product = true;
-                break;
-            }
-
-            // Überprüfe, ob eine der Variationen dem Elternprodukt entspricht
-            foreach ($variation_parents as $variation_id => $parent_id) {
-                if ($parent_id == $required_product_id && (!empty($bogof_excluded_variations) && !in_array($variation_id, $bogof_excluded_variations))) {
-                    $found_required_product = true;
-                    break 2;
-                }
-            }
-        }
-
-        // Wenn kein erforderliches Produkt gefunden wurde, Fehler anzeigen und Gutschein entfernen
-        if (!$found_required_product) {
-            // Entferne den Gutschein
-            WC()->cart->remove_coupon($coupon_code);
-
-            // Fehlermeldung mit wc_add_notice ausgeben - ohne spezifische Produktnamen
-            wc_add_notice(
-                sprintf(
-                    __('Der Gutscheincode "%s" kann mit den Produkten in Ihrem Warenkorb nicht verwendet werden.', 'woocommerce'),
-                    $coupon_code
-                ),
-                'error'
-            );
-
-            return;
-        }
-
-        // Wenn ein gültiges Produkt gefunden wurde, führe die normale Aktion aus
-        add_free_product_with_coupon();
     }
+
+    if (!$matching_campaign) {
+        bogof_debug("Coupon $coupon_code gehört zu keiner aktiven BOGOF-Kampagne");
+        return;
+    }
+
+    bogof_debug("Coupon $coupon_code gehört zur Kampagne '{$matching_campaign->name}'");
+
+    // Prüfe, ob bereits ein anderer BOGOF-Gutschein aktiv ist
+    $applied_coupons = WC()->cart->get_applied_coupons();
+    $bogof_coupons_in_cart = [];
+    
+    foreach ($applied_coupons as $applied_coupon) {
+        foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+            if (in_array(strtolower($applied_coupon), $campaign->coupon_codes)) {
+                $bogof_coupons_in_cart[] = $applied_coupon;
+            }
+        }
+    }
+
+    // Wenn bereits mehr als ein BOGOF-Gutschein aktiv ist (inklusive dem gerade hinzugefügten)
+    if (count($bogof_coupons_in_cart) > 1) {
+        // Entferne den gerade hinzugefügten Gutschein
+        WC()->cart->remove_coupon($coupon_code);
+
+        // Fehlermeldung ausgeben
+        wc_add_notice(
+            __('Du kannst nur einen Gutschein pro Bestellung aktivieren.', 'woocommerce'),
+            'error'
+        );
+
+        bogof_debug("Mehrere BOGOF-Gutscheine erkannt, $coupon_code wurde entfernt");
+        return;
+    }
+
+    // Prüfe, ob die erforderlichen Produkte im Warenkorb sind
+    if (!$campaign_manager->find_matching_campaign()) {
+        // Entferne den Gutschein, da die Bedingungen nicht erfüllt sind
+        WC()->cart->remove_coupon($coupon_code);
+
+        // Fehlermeldung mit wc_add_notice ausgeben
+        wc_add_notice(
+            sprintf(
+                __('Der Gutscheincode "%s" kann mit den Produkten in Ihrem Warenkorb nicht verwendet werden.', 'woocommerce'),
+                $coupon_code
+            ),
+            'error'
+        );
+
+        return;
+    }
+
+    // Wenn alle Bedingungen erfüllt sind, führe die normale Aktion aus
+    add_free_product_with_coupon();
 }
 
 /**
@@ -398,27 +466,36 @@ function set_free_product_price($cart)
 add_action('woocommerce_before_calculate_totals', 'set_free_product_price', 99);
 
 /**
- * Begrenzt die Anzahl des Gratisprodukts auf maximal 1
+ * Begrenzt die Anzahl des Gratisprodukts basierend auf der jeweiligen Kampagne
  */
 function limit_free_product_quantity($cart_contents)
 {
-    global $bogof_free_product_id, $bogof_max_quantity;
+    $campaign_manager = BOGOF_Campaign_Manager::get_instance();
 
     foreach ($cart_contents as $cart_item_key => $cart_item) {
-        // Prüfen, ob es sich um unser kostenloses Produkt handelt
-        if (
-            isset($cart_item['free_product']) && $cart_item['free_product'] &&
-            $cart_item['product_id'] == $bogof_free_product_id
-        ) {
+        // Prüfen, ob es sich um ein kostenloses Produkt handelt
+        if (isset($cart_item['free_product']) && $cart_item['free_product']) {
+            
+            // Finde die passende Kampagne für dieses Produkt
+            $matching_campaign = null;
+            foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+                if ($campaign->free_product_id == $cart_item['product_id']) {
+                    $matching_campaign = $campaign;
+                    break;
+                }
+            }
 
-            // Wenn die Menge größer als das Maximum ist, setze sie zurück
-            if ($cart_item['quantity'] > $bogof_max_quantity) {
-                $cart_contents[$cart_item_key]['quantity'] = $bogof_max_quantity;
-                bogof_debug("Menge des Gratisprodukts auf $bogof_max_quantity begrenzt");
-                wc_add_notice(
-                    sprintf(__('Die Menge des kostenlosen Produkts wurde auf %d begrenzt, da es sich um ein Geschenk handelt.', 'woocommerce'), $bogof_max_quantity),
-                    'notice'
-                );
+            if ($matching_campaign) {
+                // Wenn die Menge größer als das Maximum ist, setze sie zurück
+                if ($cart_item['quantity'] > $matching_campaign->max_quantity) {
+                    $cart_contents[$cart_item_key]['quantity'] = $matching_campaign->max_quantity;
+                    bogof_debug("Menge des Gratisprodukts in Kampagne '{$matching_campaign->name}' auf {$matching_campaign->max_quantity} begrenzt");
+                    wc_add_notice(
+                        sprintf(__('Die Menge des kostenlosen Produkts aus "%s" wurde auf %d begrenzt.', 'woocommerce'), 
+                            $matching_campaign->name, $matching_campaign->max_quantity),
+                        'notice'
+                    );
+                }
             }
         }
     }
@@ -432,17 +509,23 @@ add_filter('woocommerce_cart_contents_changed', 'limit_free_product_quantity');
  */
 function disable_free_product_quantity_changes()
 {
-    global $bogof_free_product_id;
-
     $cart_items = WC()->cart->get_cart();
 
     foreach ($cart_items as $cart_item_key => $cart_item) {
-        if (
-            isset($cart_item['free_product']) && $cart_item['free_product'] &&
-            $cart_item['product_id'] == $bogof_free_product_id
-        ) {
+        if (isset($cart_item['free_product']) && $cart_item['free_product']) {
+            
+            // Hole die maximale Anzahl aus der Kampagne
+            $max_quantity = isset($cart_item['campaign_name']) ? 1 : 1; // Fallback auf 1
+            
+            $campaign_manager = BOGOF_Campaign_Manager::get_instance();
+            foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+                if ($campaign->free_product_id == $cart_item['product_id']) {
+                    $max_quantity = $campaign->max_quantity;
+                    break;
+                }
+            }
 
-            // Füge JavaScript hinzu, um die Mengenänderung zu deaktivieren
+            // Füge JavaScript hinzu, um die Mengenänderung zu begrenzen
 ?>
 <script type="text/javascript">
 jQuery(document).ready(function($) {
@@ -456,11 +539,11 @@ jQuery(document).ready(function($) {
             );
         });
 
-    // Setze die Werte auf 1 zurück, falls sie geändert wurden
+    // Setze die Werte auf das Maximum zurück, falls sie geändert wurden
     $('form.woocommerce-cart-form').on('change',
         'input[type=number][name="cart[<?php echo $cart_item_key; ?>][qty]"]',
         function(e) {
-            $(this).val(1);
+            $(this).val(<?php echo $max_quantity; ?>);
         });
 });
 </script>
@@ -478,20 +561,27 @@ add_action('woocommerce_after_checkout_form', 'disable_free_product_quantity_cha
  */
 function validate_cart_item_quantity($passed, $cart_item_key, $values, $quantity)
 {
-    global $bogof_free_product_id, $bogof_max_quantity;
+    // Wenn es sich um ein kostenloses Produkt handelt
+    if (isset($values['free_product']) && $values['free_product']) {
+        
+        // Finde die passende Kampagne
+        $campaign_manager = BOGOF_Campaign_Manager::get_instance();
+        $max_quantity = 1; // Fallback
+        
+        foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+            if ($campaign->free_product_id == $values['product_id']) {
+                $max_quantity = $campaign->max_quantity;
+                break;
+            }
+        }
 
-    // Wenn es sich um das Gratisprodukt handelt und jemand versucht, mehr als die erlaubte Menge hinzuzufügen
-    if (
-        isset($values['free_product']) && $values['free_product'] &&
-        $values['product_id'] == $bogof_free_product_id && $quantity > $bogof_max_quantity
-    ) {
-
-        wc_add_notice(
-            sprintf(__('Die maximale Menge für dieses kostenlose Geschenk ist %d.', 'woocommerce'), $bogof_max_quantity),
-            'error'
-        );
-
-        return false;
+        if ($quantity > $max_quantity) {
+            wc_add_notice(
+                sprintf(__('Die maximale Menge für dieses kostenlose Geschenk ist %d.', 'woocommerce'), $max_quantity),
+                'error'
+            );
+            return false;
+        }
     }
 
     return $passed;
@@ -499,75 +589,56 @@ function validate_cart_item_quantity($passed, $cart_item_key, $values, $quantity
 add_filter('woocommerce_update_cart_validation', 'validate_cart_item_quantity', 10, 4);
 
 /**
- * Entfernt das Gratisprodukt, wenn der Coupon entfernt wird oder die erforderlichen Produkte entfernt werden
- * oder wenn das aktuelle Datum außerhalb des gültigen Zeitraums liegt
+ * Entfernt Gratisprodukte, wenn die Bedingungen der Kampagnen nicht mehr erfüllt sind
  */
 function remove_free_product_if_requirements_not_met()
 {
-    global $bogof_required_products, $bogof_free_product_id, $bogof_coupon_codes,
-        $bogof_start_date, $bogof_end_date;
-
     // Wenn Warenkorb nicht verfügbar ist, abbrechen
     if (!function_exists('WC') || !isset(WC()->cart)) {
         return;
     }
 
-    // Prüfe, ob das aktuelle Datum im gültigen Zeitraum liegt
-    $current_date = date('Y-m-d');
-    $date_valid = ($current_date >= $bogof_start_date && $current_date <= $bogof_end_date);
+    $campaign_manager = BOGOF_Campaign_Manager::get_instance();
+    $cart_items = WC()->cart->get_cart();
 
-    // Wenn das Datum nicht gültig ist, Gratisprodukt entfernen
-    if (!$date_valid) {
-        bogof_debug("Datum nicht gültig: $current_date liegt außerhalb $bogof_start_date - $bogof_end_date");
-        remove_bogof_product();
-        return;
-    }
+    // Durchlaufe alle Warenkorb-Items und prüfe kostenlose Produkte
+    foreach ($cart_items as $cart_item_key => $cart_item) {
+        if (isset($cart_item['free_product']) && $cart_item['free_product']) {
+            
+            // Finde die passende Kampagne für dieses Gratisprodukt
+            $matching_campaign = null;
+            foreach ($campaign_manager->get_active_campaigns() as $campaign) {
+                if ($campaign->free_product_id == $cart_item['product_id']) {
+                    
+                    // Prüfe alle Bedingungen der Kampagne
+                    if ($campaign->is_valid() && 
+                        $campaign->has_valid_coupon() && 
+                        $campaign_manager->has_required_products($campaign)) {
+                        $matching_campaign = $campaign;
+                        break;
+                    }
+                }
+            }
 
-    // Prüfe, ob der Coupon angewendet wurde
-    $applied_coupons = WC()->cart->get_applied_coupons();
-    $coupon_applied = !empty(array_intersect(array_map('strtolower', $bogof_coupon_codes), array_map('strtolower', $applied_coupons)));
-
-    if (!$coupon_applied) {
-        bogof_debug("Keiner der Coupons wurde angewendet, entferne Gratisprodukt");
-        remove_bogof_product();
-        return;
-    }
-
-    // Prüfe, ob mindestens eines der erforderlichen Produkte im Warenkorb ist
-    $found_required_product = false;
-
-    // Durchlaufe jedes erforderliche Produkt und prüfe ob es im Warenkorb ist
-    foreach ($bogof_required_products as $required_product_id) {
-        // Prüfe auf exakte Übereinstimmung oder ob es die Eltern-ID einer Variation ist
-        if (bogof_is_product_in_cart($required_product_id)) {
-            $found_required_product = true;
-            break;
+            // Wenn keine passende Kampagne gefunden wurde, entferne das Produkt
+            if (!$matching_campaign) {
+                WC()->cart->remove_cart_item($cart_item_key);
+                bogof_debug("Gratisprodukt entfernt (ID: {$cart_item['product_id']}) - Bedingungen nicht mehr erfüllt");
+            }
         }
-    }
-
-    if (!$found_required_product) {
-        bogof_debug("Keine erforderlichen Produkte im Warenkorb, entferne Gratisprodukt");
-        remove_bogof_product();
-        return;
     }
 }
 add_action('woocommerce_before_calculate_totals', 'remove_free_product_if_requirements_not_met', 5);
 
 /**
- * Hilfsfunktion zum Entfernen des Gratisprodukts
+ * Hilfsfunktion zum Entfernen aller kostenlosen BOGOF-Produkte
  */
 function remove_bogof_product()
 {
-    global $bogof_free_product_id;
-
     foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
-        if (
-            $cart_item['product_id'] == $bogof_free_product_id &&
-            isset($cart_item['free_product']) && $cart_item['free_product']
-        ) {
+        if (isset($cart_item['free_product']) && $cart_item['free_product']) {
             WC()->cart->remove_cart_item($cart_item_key);
-            bogof_debug("Gratisprodukt entfernt");
-            break;
+            bogof_debug("Gratisprodukt entfernt (ID: {$cart_item['product_id']})");
         }
     }
 }
