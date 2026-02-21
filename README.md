@@ -35,6 +35,31 @@ BOGOF (Buy One Get One Free) is a WordPress/WooCommerce plugin that automaticall
 2. Activate the plugin through the WordPress admin panel under "Plugins"
 3. Configure your campaigns in the `bogof-campaigns.php` file
 
+### Upload per FileZilla (SFTP) & Konfiguration
+
+1. Stelle sicher, dass du die SFTP-Zugangsdaten hast (Host, Port, Benutzername, Passwort oder SSH-Key) sowie den Pfad zur WordPress-Installation.
+2. FileZilla öffnen:
+   - `Datei` -> `Servermanager` -> `Neuer Server`
+   - Protokoll: `SFTP - SSH File Transfer Protocol`
+   - Host: z.B. `example.com`, Port: meist `22`
+   - Anmeldetyp: `Normal` (Passwort) oder `Schlüsseldatei` (Key)
+3. Verbinden und im Remote-Verzeichnis zum WordPress-Ordner navigieren.
+   - Typische Pfade: `public_html/`, `httpdocs/` oder `www/`
+   - Dort muss es ein `wp-content/` geben.
+4. Auf dem Server in `wp-content/plugins/` wechseln.
+5. Den kompletten Plugin-Ordner hochladen:
+   - Ziel auf dem Server: `wp-content/plugins/bogof-plugin/`
+   - Wichtig: Der Ordnername sollte `bogof-plugin` sein (also nicht z.B. `wp-bogof-plugin-main`).
+6. In WordPress Admin -> `Plugins` das Plugin aktivieren.
+7. Kampagnen konfigurieren:
+   - `wp-content/plugins/bogof-plugin/bogof-campaigns.php` bearbeiten (lokal anpassen und per FileZilla wieder hochladen oder direkt per Editor in FileZilla).
+   - Product-IDs/Variation-IDs aus WooCommerce verwenden (Produkte -> ID in der URL/Listenansicht).
+
+Hinweise:
+- Nutze nur `bogof-plugin.php` (die Datei `bogof-plugin-front.php` ist laut "Known Issues" nicht funktionsfähig).
+- Falls ein Cache/Opcode-Cache aktiv ist, ggf. Cache leeren (z.B. WP-Cache-Plugin, Server-Cache), damit Änderungen sofort greifen.
+- Datei-/Ordnerrechte: Falls Upload fehlschlägt, prüfe Schreibrechte im `plugins/`-Ordner.
+
 ---
 
 ## ⚙️ Configuration
